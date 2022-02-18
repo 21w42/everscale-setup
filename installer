@@ -1,895 +1,635 @@
+# Everscale Node installer 
+
 #!/usr/bin/env bash
-#------------------------------------------------------------------------------------------------------------#
 
-## Check root or not
+#===============================================================================
 
-if [ "$EUID" -ne 0 ]
-  then echo "Please run installer as root"
-  exit
+# Coloring
+
+tHead=$(tput bold)
+tHead2=$(tput smul)
+tError=$(tput setaf 1)
+tInfo=$(tput setaf 2)
+tWarn=$(tput setaf 3)
+tComment=$(tput dim)
+tLink=$(tput setaf 6)
+tUl=$(tput smul)
+tHeart=$(tput setaf 1)
+tClear=$(tput sgr0)
+
+# Envs
+
+loadEnvs () {
+
+installerConfigDir="/etc/everscale"
+installerConfig="${installerConfigDir}/everos-validator_installer.conf"
+serviceName="everos-validator"
+
+# Try to load local envs
+if test -f "${installerConfig}"; then source "${installerConfig}"; fi
+
+# Everscale root directory
+if [[ -z "${installPrefix}" ]] || [[ ! ${installPrefix} =~ ${folderRegex} ]]; then
+setDir "install directory" "/opt/everscale"
+installPrefix=${setDirVar}
+setDirVar=null
 fi
 
-#------------------------------------------------------------------------------------------------------------#
+# Everscale bin dir
+binDir="${installPrefix}/bin"
+# Everscale build direcory
+buildDir="${installPrefix}/build"
+# Everscale temp_binaries direcory
+buildTempDir="${buildDir}/tmp"
+# Everscale build direcory src
+buildSrcDir="${buildDir}/src"
 
-## Installer defines
+# Everscale node root directory (data)
+if [[ -z "${nodePrefix}" ]] || [[ ! ${nodePrefix} =~ ${folderRegex} ]]; then
+setDir "node working directory (data)" "/var/lib/everscale/${serviceName}"
+nodePrefix=${setDirVar}
+setDirVar=null
+fi
 
-# Github repo of node
-EVER_OS_NODE_GH="https://github.com/tonlabs/ton-labs-node.git"
+# Everscale validator log directory
+if [[ -z "${logDir}" ]] || [[ ! ${logDir} =~ ${folderRegex} ]]; then
+setDir "log directory" "/var/log/ever"
+logDir=${setDirVar}
+setDirVar=null
+fi
+
+# Everscale backup direcory
+if [[ -z "${backupDir}" ]] || [[ ! ${backupDir} =~ ${folderRegex} ]]; then
+setDir "backup directory" "${installPrefix}/backup"
+backupDir=${setDirVar}
+setDirVar=null
+fi
+
+# Service binaries
+serviceFile="/lib/systemd/system/${serviceName}.service"
+serviceBinary="${serviceName}"
+
+# Everscale node subdirs
+nodeDbDir="${nodePrefix}/db"
+nodeConfigDir="${nodePrefix}/etc"
+nodeBocDir="${nodePrefix}/boc"
+
+# Rust directory: rustup
+rustup="${installPrefix}/rustup"
+# Rust directory: cargo
+cargo="${installPrefix}/cargo"
+
+# Github repo of Ever OS node
+master_nodeGh="https://github.com/tonlabs/ton-labs-node.git"
+master_nodeGhDirName="master_everos-node"
 # Github repo of node-tools
-EVER_OS_TOOLS_GH="https://github.com/tonlabs/ton-labs-node-tools.git"
+master_toolsGh="https://github.com/tonlabs/ton-labs-node-tools.git"
+master_toolsGhDirName="master_everos-node-tools"
 # Github repo of TONOS-CLI
-TONOS_CLI_GH=https://github.com/tonlabs/tonos-cli.git
-# Github repo of Everscale setup (this script)
-EVER_SETUP_RAW_GH="https://raw.githubusercontent.com/TolikUSS/everscale-setup/"
+master_cliGh="https://github.com/tonlabs/tonos-cli.git"
+master_cliGhDirName="master_everos-cli"
+
 # Mainnet global config
-MAINNET_GLOBAL_CONFIG="https://raw.githubusercontent.com/tonlabs/main.ton.dev/master/configs/ton-global.config.json"
+mainnet_globalConfig="https://raw.githubusercontent.com/tonlabs/main.ton.dev/master/configs/ton-global.config.json"
 
 ## Installer dependencies + useful software
+# Ubuntu
+ubuntuPackages="net-tools chrony cmake automake pkg-config git libssl-dev clang libzstd-dev gperf libgoogle-perftools-dev nload curl wget jq mc"
+# Centos
+centosPackages="net-tools chrony openssl-devel clang libzstd-devel gperftools gperftools-devel nload curl wget jq mc"
+# Rust
+rustVersion="1.58.0"
 
-UBU_PKGS="net-tools chrony cmake automake pkg-config git libssl-dev clang libzstd-dev gperf libgoogle-perftools-dev nload curl wget jq mc"
-CENTOS_PKGS="net-tools chrony openssl-devel clang libzstd-devel gperftools gperftools-devel nload curl wget jq mc"
-RUST_VERSION="1.58.0"
+## Installer VARs
+date="$(date '+%Y-%m-%d_%H_%M')"
 
-## Installer 
-
-TMP="/var/tmp/everscale-setup"
-DATE="$(date '+%Y-%m-%d_%H_%M')"
-# Node ADNL port (UDP) possible range
-EVER_PORT_MIN=1024
-EVER_PORT_MAX=65535
-
-SERVICE_FILE_DIST=$TMP/SERVICE_FILE_DIST
-SERVICE_ENV_DIST=$TMP/SERVICE_ENV_DIST
-CHRONY_FILE_DIST=$TMP/CHRONY
-
-# Regex
-
-FOLDER_REG="^\/([0-9a-zA-Z\.]+)(\/([0-9a-zA-Z\.]+))*\/?$"
-DIGIT_REG="^[0-9]+$"
-USERNAME_REG="^[[:lower:]_][[:lower:][:digit:]_-]{2,15}$"
-
-## Mandatory 
-
-#--- FOLDERS -------------------------------#
-
-# Local config direcory
-DEPLOY_CONFIG_DIR="/etc/everscale"
-# Local 
-DEPLOY_CONFIG="${DEPLOY_CONFIG_DIR}/deploy.conf"
-DEPLOY_CONFIG_CHANGE=0
-EVER_SERVICE_FILE="/lib/systemd/system/everscale.service"
-EVER_SERVICE_ENV="${DEPLOY_CONFIG_DIR}/everscale_service.conf"
-
-## Local variables
-
-localVars () {
-
-#--- PORTS ---------------------------------#
+# Regex validation
+folderRegex="^\/([0-9a-zA-Z\.]+)(\/([0-9a-zA-Z\.]+))*\/?$"
+digitRegex="^[0-9]+$"
+usernameRegex="^[[:lower:]_][[:lower:][:digit:]_-]{2,15}$"
 
 # Node ADNL port (UDP)
-EVER_PORT=30303
+# Node ADNL port (UDP) possible range
+nodePortMin=1024
+nodePortMax=65535
+if [[ -z "${nodePort}" ]] || [[ ! ${nodePort} =~ ${digitRegex} ]]; then
+setPort 30303 ${nodePortMin} ${nodePortMax}
+fi
 
-#--- FOLDERS -------------------------------#
+# TMP for misc
+tempDir="/var/tmp/everscale"
+serviceFileDist="${tempDir}/serviceFileDist"
+chronyConfigDist="${tempDir}/chrony"
+sysctlConfigDist="${tempDir}/sysctl"
 
-# Everscale root direcory
-EVER_ROOT=/opt/everscale
-# Everscale bin dir
-EVER_BIN=${EVER_ROOT}/bin
-# Everscale build direcory
-EVER_BUILD=${EVER_ROOT}/build
-# Everscale temp_binaries direcory
-EVER_BUILD_TEMP=${EVER_BUILD}/tmp
-# Everscale build direcory src
-EVER_BUILD_SRC=${EVER_BUILD}/src
-# Rust direcory: rustup
-EVER_RUSTUP=${EVER_ROOT}/rustup
-# Rust direcory: cargo
-EVER_CARGO=${EVER_ROOT}/cargo
-# Everscale backup direcory
-EVER_BACKUP=${EVER_ROOT}/backup
-# Everscale log directory
-EVER_LOG=/var/log/ever
-# Everscale node root direcory
-EVER_NODE_ROOT=/var/db/everscale
+pidDir="/var/run/everscale"
+pidFile="${pidDir}/${serviceName}_installer.pid"
 
-EVER_NODE_ROOT_DB=${EVER_NODE_ROOT}/db
-EVER_NODE_ROOT_ETC=${EVER_NODE_ROOT}/etc
-EVER_NODE_ROOT_BOC=${EVER_NODE_ROOT}/boc
+# Everscale node user
+if [[ -z "${serviceUser}" ]] || [[ ! ${serviceUser} =~ ${usernameRegex} ]]; then
+setUser "everos"
+fi
 
-#--- INSTALLER PID -------------------------#
-
-PID_FOLDER="/var/run/everscale"
-PIDFILE="${PID_FOLDER}/e_installer.pid"
-
-#--- USERS ---------------------------------#
-
-# Everscale rust node user
-EVER_USER=ever
+saveConfig
 
 }
 
-localVars
-#------------------------------------------------------------------------------------------------------------#
+setDir () {
+
+printf "${tHead}* Setting $1${tClear}\n
+--------------------------------------------------------------------------------\n\n"
+
+# usage: setDir $text $varValue
+
+while :; do
+read -p "Confirm to set default $1 is [${tLink}$2${tClear}]. Press ENTER to accept or enter your value (absolute path): " path
+
+if [ ! -z "${path}" ];then
+if [[ $path =~ ${folderRegex} ]]; then
+path=`echo "$path" | sed 's/\/$//'`
+printf "${tInfo}\ninfo: ${tClear}New default $1 is ${path}\n\n"
+setDirVar=${path}
+break
+else
+printf "\n_error: ${tError}Path is not valid, please try again or press ENTER to accept default $1 value: [$2]\n\n"
+fi
+else
+printf "${tInfo}\ninfo: ${tClear}Using default path $2\n\n"
+setDirVar=$2
+break; fi
+done
+
+}
+
+setUser () {
+
+printf "${tHead}* Setting service username${tClear}\n
+--------------------------------------------------------------------------------\n\n"
+
+# usage: setUser $username
+
+while :; do
+read -p "Confirm to set node process user to [${tLink}$1${tClear}]. Press ENTER to accept or enter your value: " username
+
+if [ ! -z "$username" ]
+then
+if [[ $username =~ $usernameRegex ]]; then
+printf "${tInfo}\ninfo: ${tClear}New node process user is ${username}\n\n"
+serviceUser=${username}
+break
+else
+printf "\n_error: ${tError}Username is not valid, please try again or press ENTER to accept [$1]\n\n"
+fi
+else
+printf "${tInfo}\ninfo: ${tClear}Using default username $1\n\n"
+serviceUser=$1
+break
+fi
+done
+
+}
+
+setPort () {
+
+printf "${tHead}* Setting service port${tClear}\n
+--------------------------------------------------------------------------------\n\n"
+
+while :; do
+read -p "Confirm to set everscale's default UDP port [${tLink}$1${tClear}]. Press ENTER to accept or enter your value (${2} - ${3}): " port
+[[ $port =~ $digitRegex ]] || { printf "${tInfo}\ninfo: ${tClear}Using default port $1\n\n"; nodePort=$1; break; }
+if ((port >= ${2} && port <= ${3})); then
+printf "${tInfo}\ninfo: ${tClear}New server port number is ${port}\n\n"
+nodePort=${port}
+break
+else
+printf "\n_error: ${tError}Port is out of allowed range, please try again or press ENTER to accept port [$1]\n\n"
+fi
+done
+
+} 
+
+
+
+createFolder () {
+
+if [ ! -d "$1" ]; then mkdir -p $1
+# if chmod is passed 
+if [ ! -z ${3+x} ]; then chmod -R $3 $1; chmod=" with permissions $3" ; fi
+# chown if we need it
+if [ "$2" -eq 1 ]; then chown -R ${serviceUser}:${serviceUser} $1; owner=" with owner ${serviceUser}:${serviceUser}"; fi
+printf "${tInfo}info: ${tClear}Created folder ${tLink}$1${tClear}${chmod}${owner}\n\n" 
+fi
+
+}
+
+saveConfig () {
+
+createFolder ${installerConfigDir} 0 700
+
+cat >$installerConfig <<EOL
+# This file will be rewritten each time. You can modify values by hand, but be careful.
+installPrefix=${installPrefix}
+nodePrefix=${nodePrefix}
+logDir=${logDir}
+backupDir=${backupDir}
+serviceUser=${serviceUser}
+nodePort=${nodePort}
+EOL
+
+}
+
+# Compare Git versions. We're going to rebuild only if repo is updated
+
+compareGit () {
+
+# Usage compareGit $1repoCommonName $2remote $3locaPath $4branch
+
+printf "${tInfo}\ninfo: ${tClear}Comparing $1 repo${tClear}\n"
+
+Commit=`git ls-remote $2 $4 | awk '{print $1}'`
+
+if [ -d ${buildSrcDir}/$3 ]; then 
+cd ${buildSrcDir}/$3 
+CommitL=`git log -1 | grep commit | awk '{print $2}'`
+printf "local / remote commit:\n    local commit: ${tLink}${CommitL}${tClear}\n   remote commit: ${tLink}${Commit}${tClear}\n"
+else
+printf "${tWarn}warn: ${tClear}Local $1 is missing. Doing clone${tClear}\n"
+git clone $2 ${buildSrcDir}/$3 
+CommitL=${Commit}
+Init=1
+fi
+
+if [[ ! ${Commit} == ${CommitL} ]]; then
+printf "${tWarn}warn: ${tClear}Local - Remote repos mismatch. Making clone:\n"
+yes | rm -rf ${buildSrcDir}/$3
+git clone $2 ${buildSrcDir}/$3 
+else
+if [[ ! $Init -eq 1 ]]; then printf "${tInfo}info: ${tClear}Local - Remote repos match. No action needed${tClear}\n";fi
+fi
+
+}
+
+doCompareGit () {
+
+printf "${tHead}* Comparing and redownloading repos from $1${tClear}\n
+--------------------------------------------------------------------------------\n\n"
+
+case $1 in
+
+master)
+
+# NODE
+compareGit "Everscale node" ${master_nodeGh} ${master_nodeGhDirName} "master"
+
+# NODE-TOOLS
+compareGit "Everscale node-tools" ${master_toolsGh} ${master_toolsGhDirName} "master"
+
+# NODE-TOOLS
+compareGit "Everscale cli" ${master_cliGh} ${master_cliGhDirName} "master"
+
+;;
+esac
+
+}
+
+loadLogo () {
 
 ### Logo and creds
 
 # Logo
 
-echo "
-
-         *@@@@@@@@@@@@@@          Everscale validator node installer script
-       *@@@@@@@@@@@@@@@@
-     *@@@@@@@@@@@@@@@@@@          v 0.1
-   *@@@@@@@@@@@@@@@@@@@@
-                @@@@@@@@          2022-02-07
-                @@@@@@@@
-                @@@@@@@*
-                @@@@@*
-                @@@*
-                @*
-
-"
+    printf "\n${tHead}      *@@@@@@@@@@@@@@          Everscale Ever OS validator node installer
+    *@@@@@@@@@@@@@@@@
+  *@@@@@@@@@@@@@@@@@@          v 0.2
+*@@@@@@@@@@@@@@@@@@@@
+             @@@@@@@@          2022-02-15
+             @@@@@@@@
+             @@@@@@@*
+             @@@@@*
+             @@@*
+             @*${tClear}\n\n"
 
 # Creds
 
-echo "
+printf "Made by Anatoly Ustinov with ${tHeart}♥${tClear}
 
-Made by Anatoly Ustinov
+tg: ${tLink}@ustinovpro${tClear}
 
----------------------------------------------
+----------------------------------------------
 
-thanks to:
+thanks to this repos:
 
-TON Labs
-https://github.com/tonlabs
+Ever X Labs
+${tLink}https://github.com/tonlabs${tClear}
 
 Sergey Tyurin
-https://github.com/Custler
+${tLink}https://github.com/Custler\n\n"
 
-"
+sleep 2
 
 # Changelog
 
-echo "
+printf "> ${tUl}Changelog${tClear}:
+${tComment}
+--- 15-02-2022 ------------------------------
 
-Changelog:
+- Optimized script structure
+- Tested and supported Ubuntu 18.04
 
 --- 02-02-2022 ------------------------------
-                     
+
 - Initial release
 - Tested and supported Centos 8, Ubuntu 20.04
+${tClear}\n\n"
+sleep 1
 
-"
+}
 
-sleep 5
+rootCheck () {
 
-#------------------------------------------------------------------------------------------------------------#
+printf "${tHead}\n* Checking if thes script is running under root user (sudo)${tClear}\n
+--------------------------------------------------------------------------------\n\n"
 
-echo "
-Installer main process is running on pid: \"${PIDFILE}\"
-"
-mkdir -p $PID_FOLDER
+if [ "$EUID" -ne 0 ]; then printf "${tError}error: ${tClear}please run installer script as root!\n\n"; sleep 1; exit 1; else printf "${tInfo}info: ${tClear}ok\n\n"; sleep 1; fi
 
-if test -f "$PIDFILE"; then
-        PID=$(cat $PIDFILE)
-        if ps -p $PID > /dev/null 2>&1
-        then
-            exit 1
-        else
-            echo $$ > $PIDFILE
-        fi
-    else
-        echo $$ > $PIDFILE
-fi
+}
 
-#------------------------------------------------------------------------------------------------------------#
+osCompliance () {
 
-### Get OS Ver
+printf "${tHead}\n* Getting OS info${tClear}\n
+--------------------------------------------------------------------------------\n\n"
 
 OPSYS=`uname -s`
-if [[ "${OPSYS}" == "Linux" ]]
-then
-	# LOAD ENV
-	. /etc/os-release
-	OPSYS="${ID}"
-	OPVER="${VERSION_ID}"
-else 
-	echo "Operating system ${OPSYS} is unsupported"
-	exit 1
-fi
+if [[ "${OPSYS}" == "Linux" ]]; then source /etc/os-release; OPSYS="${ID}"; OPVER="${VERSION_ID}"; else printf "${tError}error: ${tClear}Operating system ${OPSYS} is unsupported\n\n"; exit 1; fi
 
-#------------------------------------------------------------------------------------------------------------#
-
-### Check system comliance: OS
-
-echo "
-
-Checking OS requirements...
-
-"
+printf "${tInfo}info: ${tClear}Checking packages\n\n"
 
 sleep 1
 
 case $OPSYS in
-	centos)
-	echo "
-- Centos OS detected
-	"
-	export ZSTD_LIB_DIR=/usr/lib64
+centos)
+printf "${tInfo}info: ${tClear}Centos OS detected\n\n"
+export ZSTD_LIB_DIR=/usr/lib64
 
-		case $OPVER in
-			8 | 7)
-				echo "
-- Version $OPVER is supported
-				"
-			yum -y update --allowerasing
-			yum -y group install -y "Development Tools"
-			yum -y install epel-release
-			yum -y install ${CENTOS_PKGS}
-			;;
-			*)
-				echo "
-- Version $OPVER is not supported
-				"
-				exit 1
-			;;
-		esac
-    ;;
+case $OPVER in
+8 | 7)
+printf "${tInfo}info: ${tClear}Version $OPVER is supported\n\n"
+yum -y update --allowerasing
+yum -y group install -y "Development Tools"
+yum -y install epel-release
+yum -y install ${centosPackages}
+printf "${tInfo}\ninfo: ${tClear}Package update is complete\n\n"
+;;
+*)
+printf "${tError}error: ${tClear}Version $OPVER is not supported\n\n"; exit 1
+;;
+esac
+;;
 
-    ubuntu)
-	echo "
-- Ubuntu OS detected
-	"
-    export ZSTD_LIB_DIR=/usr/lib/x86_64-linux-gnu
+ubuntu)
+printf "${tInfo}info: ${tClear}Ubuntu OS detected\n\n"
+export ZSTD_LIB_DIR=/usr/lib/x86_64-linux-gnu
 
-		case $OPVER in
-			20.04)
-				echo "
-- Version $OPVER is supported
-				"
-			apt upgrade -y
-			apt install -y software-properties-common
-			apt install -y ${UBU_PKGS}
-			;;
-			*)
-				echo "
-- Version $OPVER is not fully tested
-				"
-				exit 1
-			;;
-		esac
-    ;;
+case $OPVER in
+20.* | 18.*)
+printf "${tInfo}info: ${tClear}Version $OPVER is supported\n\n"
+apt upgrade -y
+apt install -y software-properties-common
+apt install -y ${ubuntuPackages}
+printf "${tInfo}\ninfo: ${tClear}Package update is complete\n\n"
+;;
+*)
+printf "${tWarn}warn: ${tClear}Version $OPVER is not fully tested\n\n"
+exit 1
+;;
+esac
+;;
 
-    *)
-	echo "
-- OS ${OPSYS} detected and it's not supported by node installer script
-	"
-    exit 1
-    ;;
-
+*)
+printf "${tError}error: ${tClear}OS ${OPSYS} detected and it's not supported by node installer script\n\n";exit 1
+;;
 esac
 
-#------------------------------------------------------------------------------------------------------------#
-
-### Check system comliance
-
-echo "Checking system requirements...
-
-"
-#------------------------------------------------------------------------------------------------------------#
-
-#------------------------------------------------------------------------------------------------------------#
-
-### Check for installer config file 
-
-# Some functions
-
-check_free_space () {
-
-free_space=$(df -h | awk '{print $4, $6}' | while read free path; do
-# check free space of mount
-if [[ $1 == *"$path"* ]]; then
-	path_l=${#path}
-  #echo "$path length: ${#path}"
-  	if [[ $path_l -gt $path_c ]]; then
-  		path_c=$path_l
-  		echo "$path $free"
-  	fi
-fi
-done | tail -1)
-
-read -a strarr <<< $free_space
-fs_MNT=${strarr[0]}
-fs_FREE=${strarr[1]}
-
 }
 
-create_folder () {
-	if [ ! -d "$1" ]
-		then
-	    	mkdir -p $1
-	    	# if chmod is passed 
-	    	if [ ! -z ${3+x} ]
-	    		then
-	    			chmod $3 $1
-	    	fi
-	    	# chown if we need it
-	    	if [ "$2" -eq 1 ]
-	    		then
-	    			chown ${EVER_USER}:${EVER_USER} $1
-	    	fi
-	fi
-}
+prepareSystem () {
 
-#echo Creating default folders
-create_folder ${TMP} 0
+printf "${tHead}\n* Preparing system${tClear}\n
+--------------------------------------------------------------------------------\n\n"
 
-set_variables () {
-
-# Trying to set variables if no installer config is found
-
-#------------
-
-while :; do
-  read -p "Confirm to set everscale's default UDP port [${EVER_PORT}]. Press ENTER to accept or enter your value (${EVER_PORT_MIN} - ${EVER_PORT_MAX}): " port
-  [[ $port =~ $DIGIT_REG ]] || { echo "Using default port ${EVER_PORT}
-  "; break; }
-  if ((port >= ${EVER_PORT_MIN} && port <= ${EVER_PORT_MAX})); then
-    echo "New server port number is ${port}
-    "
-    EVER_PORT=${port}
-    break
-  else
-    echo "Port is out of allowed range, please try again or press ENTER to accept port [${EVER_PORT}]
-    "
-  fi
-done
-
-#------------
-
-while :; do
-  read -p "Confirm to set everscale's default root is [${EVER_ROOT}]. Press ENTER to accept or enter your value: " path
-
-	if [ ! -z "$path" ]
-		then
-			if [[ $path =~ $FOLDER_REG ]]; then
-				path=`echo "$path" | sed 's/\/$//'`
-				echo "New everscale's default root is ${path}
-				"
-				EVER_ROOT=${path}
-				break
-			else
-				echo "Root path is not valid, please try again or press ENTER to accept default root [${EVER_ROOT}]
-				"
-			fi
-		else
-			echo "Using default path ${EVER_ROOT}
-			"; break;
-	fi
-done
-
-#------------
-
-while :; do
-  read -p "Confirm to set node default data root is [${EVER_NODE_ROOT}]. Press ENTER to accept or enter your value: " path
-
-	if [ ! -z "$path" ]
-		then
-			if [[ $path =~ $FOLDER_REG ]]; then
-				path=`echo "$path" | sed 's/\/$//'`
-				echo "New node default data root is ${path}
-				"
-				EVER_NODE_ROOT=${path}
-				break
-			else
-				echo "Root path is not valid, please try again or press ENTER to accept default root [${EVER_NODE_ROOT}]
-				"
-			fi
-		else
-			echo "Using default path ${EVER_NODE_ROOT}
-			"; break;
-	fi
-done
-
-#------------
-
-while :; do
-  read -p "Confirm to set node process user is [${EVER_USER}]. Press ENTER to accept or enter your value: " username
-
-	if [ ! -z "$username" ]
-		then
-			if [[ $username =~ $USERNAME_REG ]]; then
-				echo "New node process user is ${username}
-				"
-				EVER_USER=${username}
-				break
-			else
-				echo "Username is not valid, please try again or press ENTER to accept [${EVER_USER}]
-				"
-			fi
-		else
-			echo "Using default username ${EVER_USER}
-			"; break;
-	fi
-done
-
-#------------
-
-}
-
-save_config () {
-# Create default folder
-create_folder ${DEPLOY_CONFIG_DIR} 0 700
-
-cat >$DEPLOY_CONFIG <<EOL
-#--- PORTS ---------------------------------#
-
-# Node ADNL port (UDP)
-EVER_PORT=$EVER_PORT
-
-#--- FOLDERS -------------------------------#
-
-# Everscale root direcory
-EVER_ROOT=$EVER_ROOT
-# Everscale bin dir
-EVER_BIN=${EVER_ROOT}/bin
-# Everscale build direcory
-EVER_BUILD=${EVER_ROOT}/build
-# Everscale temp_binaries direcory
-EVER_BUILD_TEMP=${EVER_BUILD}/tmp
-# Everscale build direcory src
-EVER_BUILD_SRC=${EVER_BUILD}/src
-# Rust direcory: rustup
-EVER_RUSTUP=${EVER_ROOT}/rustup
-# Rust direcory: cargo
-EVER_CARGO=${EVER_ROOT}/cargo
-# Everscale backup direcory
-EVER_BACKUP=${EVER_ROOT}/backup
-# Everscale log directory
-EVER_LOG=$EVER_LOG
-# Everscale node database direcory
-EVER_NODE_ROOT=$EVER_NODE_ROOT
-EVER_NODE_ROOT_DATA=${EVER_NODE_ROOT}/db
-EVER_NODE_ROOT_ETC=${EVER_NODE_ROOT}/etc
-EVER_NODE_ROOT_BOC=${EVER_NODE_ROOT}/boc
-
-#--- INSTALLER PID -------------------------#
-
-PID_FOLDER=$PID_FOLDER
-PIDFILE="${PID_FOLDER}/e_installer.pid"
-
-#--- USERS ---------------------------------#
-
-# Everscale rust node user
-EVER_USER=$EVER_USER
-EOL
-
-DEPLOY_CONFIG_CHANGE=1
-}
-
-confirm_variables () {
-
-echo "
-Please check following settings:
-
-Everscale node port: $EVER_PORT"
-check_free_space $EVER_ROOT
-echo "
-#------------
-Everscale root directory: $EVER_ROOT | free space: $fs_FREE | mount: $fs_MNT"
-check_free_space $EVER_NODE_ROOT
-echo "
-#------------
-Everscale node root directory: $EVER_NODE_ROOT | free space: $fs_FREE | mount: $fs_MNT"
-echo "
-#------------
-Everscale node process user is $EVER_USER (will be created if missing)"
-
-
-while true; do
-    read -p "Please confirm settings y/n:" yn
-    case $yn in
-        [Yy]* ) 
-			# Save config
-			save_config
-			break
-			;;
-        [Nn]* )
-			set_variables
-			confirm_variables
-			break
-			;;
-        * ) echo "Answer \"y\" or \"n\""
-			;;
-    esac
-done
-}
-
-# Check settings
-
-echo "
-============================================================================
-Checking everscale config file (${DEPLOY_CONFIG})
-============================================================================
-"
+printf "\n${tHead}*${tClear} ${tHead2}Creating folders if needed${tClear}\n\n"
 sleep 1
 
-varInFile () {
-    variable=${1}
-
-    source ${DEPLOY_CONFIG}
-    eval value=\$\{${variable}\}
-    echo ${value}
-}
-
-if test -f "$DEPLOY_CONFIG"
-then
-    echo "
-- installer config file exists doin check:
-
-"
-
-# LOAD_LOCAL as L
-
-EVER_USER_L=`varInFile EVER_USER`
-EVER_ROOT_L=`varInFile EVER_ROOT`
-EVER_NODE_ROOT_L=`varInFile EVER_NODE_ROOT`
-EVER_PORT_L=`varInFile EVER_PORT`
-
-
-# Check EVER_USER
-
-	if [[ ! -z ${EVER_USER_L+x} ]]; then 
-		    if [[ ${EVER_USER_L} =~ $USERNAME_REG ]]; then
-				echo "- EVER_USER: valid
-				"
-			else
-				echo "- EVER_USER: not valid
-				we're going to install local config for installer/updater.
-				"
-				set_variables
-
-			fi
-		else
-			echo "- EVER_USER: not set
-			we're going to install local config for installer/updater. 
-			"
-			set_variables
-	fi
-
-# Check EVER_ROOT
-
-	if [[ ! -z ${EVER_ROOT_L+x} ]]; then 
-		    if [[ ${EVER_ROOT_L} =~ $FOLDER_REG ]]; then
-				echo "- EVER_USER: valid
-				"
-			else
-				echo "- EVER_ROOT: not valid
-				we're going to install local config for installer/updater.
-				"
-				set_variables
-
-			fi
-		else
-			echo "- EVER_ROOT: not set
-			we're going to install local config for installer/updater. 
-			"
-			set_variables
-	fi
-
-# Check EVER_NODE_ROOT
-
-	if [[ ! -z ${EVER_NODE_ROOT_L+x} ]]; then 
-		    if [[ ${EVER_NODE_ROOT_L} =~ $FOLDER_REG ]]; then
-				echo "- EVER_NODE_ROOT: valid
-				"
-			else
-				echo "- EVER_NODE_ROOT: not valid
-				we're going to install local config for installer/updater.
-				"
-				set_variables
-
-			fi
-		else
-			echo "- EVER_NODE_ROOT: not set
-			we're going to install local config for installer/updater. 
-			"
-			set_variables
-	fi
-
-# Check EVER_PORT
-
-	if [[ ! -z ${EVER_PORT_L+x} ]]; then 
-		    if [[ ${EVER_PORT_L} =~ $DIGIT_REG ]]; then
-
-		    	if ((${EVER_PORT_L} >= ${EVER_PORT_MIN} && port <= ${EVER_PORT_MAX})); then
-			    	echo "- EVER_PORT: valid
-					"
-				else 
-					echo "- EVER_PORT: not valid (not in allowed range)
-					we're going to install local config for installer/updater.
-					"
-					set_variables
-				fi
-
-			else
-				echo "- EVER_PORT: not valid
-				we're going to install local config for installer/updater.
-				"
-				set_variables
-			fi
-		else
-			echo "- EVER_PORT: not set
-			we're going to install local config for installer/updater. 
-			"
-			set_variables
-	fi
-
-# LOAD_LOCAL and overwrite values in this file
-
-source ${DEPLOY_CONFIG}
-
-else
-	echo "
-- Installer config file not found
-
----------------------------------------------
-
-We're going to install local config for installer/updater.
-Please confirm recomended values or set your own ones:
-"
-set_variables
-confirm_variables
-
-fi
-
-
-
-#------------------------------------------------------------------------------------------------------------#
-#------------------------------------------------------------------------------------------------------------#
-#------------------------------------------------------------------------------------------------------------#
-#------------------------------------------------------------------------------------------------------------#
-
-# Check if ever user exists
-
-echo "
-============================================================================
-Check if system user \"${EVER_USER}\" exists
-============================================================================
-"
-sleep 1
-
-if id -u "${EVER_USER}" >/dev/null 2>&1; then
-  echo "
-- user found
-  "
-else
-  echo "
-- user not found, creating
-  "
-  useradd ${EVER_USER}
-fi
-
-#------------------------------------------------------------------------------------------------------------#
+createFolder ${installPrefix} 0
+createFolder ${binDir} 1 770
+createFolder ${buildDir} 0
+createFolder ${buildTempDir} 0
+createFolder ${buildSrcDir} 0
+createFolder ${rustup} 0
+createFolder ${cargo} 0
+createFolder ${backupDir} 0 700
+createFolder ${logDir} 1 770
+createFolder ${nodePrefix} 1 770
+createFolder ${nodeConfigDir} 1 700
+createFolder ${nodeDbDir} 1 770
+createFolder ${nodeBocDir} 1 700
 
 # Check selinux
 
 if [[ $OPSYS == "centos" ]]; then
-echo "
-============================================================================
-Centos is detected so we need to disable selinux. You can re-enable and
-tweak it if you know what you're doing.
-============================================================================
-"
-
+printf "${tWarn}\nCentos is detected so we need to disable selinux. You can re-enable and
+tweak it if you know what you're doing.\n\n"
 setenforce 0
 echo "SELINUX=disabled" > /etc/selinux/config
-
 sleep 1
-
 fi
-
-#------------------------------------------------------------------------------------------------------------#
 
 # Sysctl and limits
 
-echo "
-============================================================================
-Doing basic tuning of sysctl. 
-============================================================================
-"
+printf "\n${tHead}*${tClear} ${tHead2}Doing basic tuning of sysctl${tClear}\n
+--------------------------------------------------------------------------------\n\n"
 sleep 1
 
-wget -O /etc/sysctl.d/101-everscale.conf https://raw.githubusercontent.com/TolikUSS/everscale-setup/main/etc/sysctl.conf
-sysctl -p /etc/sysctl.d/101-everscale.conf
+cat > /etc/sysctl.d/101-everscale.conf <<EOL
+# Max files
+fs.file-max=6521604
 
-echo "
-============================================================================
-Doing basic tuning of limits. 
-============================================================================
-"
+# Less agressive swapping
+vm.swappiness=10
+
+# Max files
+fs.file-max=6521604
+
+# Network
+net.ipv4.conf.default.arp_accept=0  
+net.ipv4.conf.all.arp_accept=0  
+net.core.rmem_max=56623104  
+net.core.wmem_max=56623104  
+net.core.rmem_default=56623104  
+net.core.wmem_default=56623104  
+net.core.optmem_max=40960  
+net.ipv4.tcp_rmem=4096 87380 56623104  
+net.ipv4.tcp_wmem=4096 65536 56623104  
+net.ipv4.tcp_max_syn_backlog=30000  
+net.ipv4.tcp_max_tw_buckets=2000000  
+net.ipv4.tcp_fin_timeout=10  
+net.ipv4.tcp_slow_start_after_idle=0  
+net.ipv4.udp_rmem_min=131072  
+net.ipv4.udp_wmem_min=131072
+EOL
+
+sysctl -p /etc/sysctl.d/101-everscale.conf
 
 cat > /etc/security/limits.d/everscale_limits.conf <<EOL
 root - memlock unlimited
-$EVER_USER - memlock unlimited
+$serviceUser - memlock unlimited
 EOL
-
-#------------------------------------------------------------------------------------------------------------#
-
-# Check directories
-
-echo "
-============================================================================
-Create folders if not exists and set path (if not exists)
-============================================================================
-"
-sleep 1
-
-# Remove EVER_BUILD if exists
-
-if [ -d ${EVER_BUILD} ]; then rm -rf ${EVER_BUILD}; fi
-
-# Create folder if not exists
-# create_folder $FOLDERNAME $CHOWN[0 or 1] $CHMOD_NUBMER
-
-create_folder ${EVER_ROOT} 0
-create_folder ${EVER_BIN} 1 770
-create_folder ${EVER_BUILD} 0
-create_folder ${EVER_BUILD_TEMP} 0
-create_folder ${EVER_BUILD_SRC} 0
-create_folder ${EVER_RUSTUP} 0
-create_folder ${EVER_CARGO} 0
-create_folder ${EVER_BACKUP} 0 700
-create_folder ${EVER_LOG} 1 770
-create_folder ${EVER_NODE_ROOT} 1 770
-create_folder ${EVER_NODE_ROOT_ETC} 1 700
-create_folder ${EVER_NODE_ROOT_DB} 1 770
-create_folder ${EVER_NODE_ROOT_BOC} 1 700
-
-# Export
-
 
 # Check if path exists
-EVER_BIN_IN_PATH=`if [[ -f /etc/profile.d/everscale.sh ]]; then more /etc/profile.d/everscale.sh | grep -c ${EVER_BIN}; else echo 0; fi` 
-	if [ "$EVER_BIN_IN_PATH" -eq 0 ]
-		then
+
+printf "\n${tHead}*${tClear} ${tHead2}Checking and adding Everscale bin to PATH${tClear}\n
+--------------------------------------------------------------------------------\n\n"
+sleep 1
+
+checkPath=`if [[ -f /etc/profile.d/everscale.sh ]]; then more /etc/profile.d/everscale.sh | grep -c ${binDir}; else echo 0; fi` 
+if [ "$checkPath" -eq 0 ]
+then
 cat > /etc/profile.d/everscale.sh <<EOL
 #Do not edit this file. It will be recreated by installer
-export PATH=\"${EVER_BIN}:${PATH}\" " > /etc/profile.d/everscale.sh
+export PATH=\"${binDir}:${PATH}\" " > /etc/profile.d/everscale.sh
 EOL
-	fi
-export PATH="${EVER_BIN}:${PATH}"
-
-#------------------------------------------------------------------------------------------------------------#
+fi
+export PATH="${binDir}:${PATH}"
 
 # Check firewall status
 
-echo "
-============================================================================
-Checking default firewall service and adding port allow rule if missing
-============================================================================
-"
+printf "\n${tHead}*${tClear} ${tHead2}Checking default firewall service and adding port allow rule if missing${tClear}\n
+--------------------------------------------------------------------------------\n\n"
 sleep 1
 
 case $OPSYS in
-	centos)
-	echo "Checking if firewalld is running:
-	"
-	if [[ $(firewall-cmd --state) == "running" ]]
-		then
-			echo "- Firewalld is running. We will check it's rules. 
-			You can disable it if you know what are you doing for better perfomance.
-			"
+centos)
+printf "${tInfo}info: ${tClear}Checking if firewalld is running:\n\n"
+if [[ $(firewall-cmd --state) == "running" ]]
+then
+printf "${tWarn}warn: ${tClear}Firewalld is running. We will check it's rules. You can disable it if you know what are you doing for better perfomance.\n\n"
 
-			if [[ $(firewall-cmd --list-ports | grep "${EVER_PORT}" | grep "udp" | awk -F/ '{ print $1}') -eq ${EVER_PORT} ]]; then 
-				echo "- Port ${EVER_PORT}/udp is open
-				"
-				else
-				echo "- Adding default rule to firewalld: \"firewall-cmd --zone=public --permanent --add-port=${EVER_PORT}/udp\"
-				"
-				firewall-cmd --zone=public --permanent --add-port=${EVER_PORT}/udp
-				echo "- Reloading rule
-				"
-				firewall-cmd --reload
-			fi
+if [[ $(firewall-cmd --list-ports | grep "${nodePort}" | grep "udp" | awk -F/ '{ print $1}') -eq ${nodePort} ]]; then 
+printf "${tInfo}info: ${tClear}Port ${nodePort}/udp is open\n\n"
+else
+printf "${tWarn}warn: ${tClear}Adding default rule to firewalld: \"firewall-cmd --zone=public --permanent --add-port=${nodePort}/udp\"\n\n"
+firewall-cmd --zone=public --permanent --add-port=${nodePort}/udp
+printf "${tInfo}info: ${tClear}Reloading rule\n\n"
+firewall-cmd --reload
+fi
 
 
-		else
-			echo "- Firewalld is not running
-			"
-	fi
-    ;;
+else
+printf "${tInfo}info: ${tClear}Firewalld is not running\n\n"
 
-    ubuntu)
-	echo "Checking if UFW is running:
-	"
-	if [[ $(ufw status) == "active" ]]
-		then
-			echo "- UFW is running. We will check it's rules. 
-			You can disable it if you know what are you doing for better perfomance.
-			"
+fi
+;;
 
-			if [[ $(ufw status | grep "${EVER_PORT}" | grep "udp"  | grep -v "v6" | awk -F/ '{ print $1}') -eq ${EVER_PORT} ]]; then 
-				echo "- Port ${EVER_PORT}/udp is open
-				"
-				else
-				echo "- Adding default rule to ufw: \"ufw allow ${EVER_PORT}/udp\"
-				"
-				ufw allow ${EVER_PORT}/udp
-			fi
-	else
-			echo "- UFW is not active
-			"
-	fi
-    ;;
+ubuntu)
+printf "${tInfo}info: ${tClear}Checking if UFW is running:\n\n"
+if [[ $(ufw status) == "active" ]]
+then
+printf "_warn: ${tInfo}UFW is running. We will check it's rules. You can disable it if you know what are you doing for better perfomance.\n\n"
+
+if [[ $(ufw status | grep "${nodePort}" | grep "udp"  | grep -v "v6" | awk -F/ '{ print $1}') -eq ${nodePort} ]]; then 
+\n\n"Port ${nodePort}/udp is open\n\n"
+else
+printf "${tWarn}warn: ${tClear}Adding default rule to ufw: \"ufw allow ${nodePort}/udp\"\n\n"
+ufw allow ${nodePort}/udp
+fi
+else
+printf "${tInfo}info: ${tClear}UFW is not active\n\n"
+fi
+;;
 
 esac
 
+# Check service file
 
-#------------------------------------------------------------------------------------------------------------#
-
-# Check firewall status
-
-echo "
-============================================================================
-Checking if service file is present
-============================================================================
-"
+printf "\n${tHead}*${tClear} ${tHead2}Checking if service file is present${tClear}\n
+--------------------------------------------------------------------------------\n\n"
 sleep 1
 
-cat >${SERVICE_FILE_DIST} <<EOL
+
+cat >${serviceFileDist} <<EOL
 [Unit]
-Description=EVERSCALE Validator Service
+Description=Ever OS Validator Service
 After=network.target auditd.service
 
 [Service]
-WorkingDirectory=${EVER_NODE_ROOT_DB}
-ExecStart=${EVER_BIN}/ton_node --configs ${EVER_NODE_ROOT_ETC}
+WorkingDirectory=${nodeDbDir}
+ExecStart=${binDir}/${serviceBinary} --configs ${nodeConfigDir}
 Type=simple
 KillMode=process
 Restart=always
 RestartSec=3
-User=${EVER_USER}
+User=${serviceUser}
 
 LimitNOFILE=6521604
 LimitNPROC=6521604
 
 StandardOutput=syslog
 StandardError=syslog
-SyslogIdentifier=${EVER_USER}
+SyslogIdentifier=${serviceUser}
 
 [Install]
 WantedBy=multi-user.target
-Alias=everscale.service
+Alias=${serviceName}.service
 EOL
 
-if [[ -f ${EVER_SERVICE_FILE} ]]; then
-		echo "- service file \"${EVER_SERVICE_FILE}\" is found
-		"
-	else
-		echo "- installing service file
-		"
-		yes | cp -r "${SERVICE_FILE_DIST}" ${EVER_SERVICE_FILE}
-		echo "- service file is installed
-		"
-		systemctl daemon-reload
+if [[ -f ${serviceFile} ]]; then
+printf "${tInfo}\ninfo: ${tClear}service file \"${serviceFile}\" is found\n\n"
+# Compute checksum of installed service file
+serviceFile_MD5=`md5sum ${serviceFile} | awk '{print $1}'`
+serviceFileDist_MD5=`md5sum ${serviceFileDist} | awk '{print $1}'`
+if [ "${serviceFile_MD5}" != "${serviceFileDist_MD5}" ]; then
+printf "\n_warn: ${tWarn}You need to update your service file\n\n"
+while true; do
+read -p "Answer "y" if you want to replace it.
+Answer y/n:" yn
+case $yn in
+[Yy]* )
+echo "- replacing service file
+"
+yes | cp -r "${serviceFileDist}" ${serviceFile}
+printf "\n_warn: ${tWarn}Service file is replaced\n\n"
+systemctl daemon-reload
+sleep 2
+break
+;;
+[Nn]* )
+printf "${tInfo}\ninfo: ${tClear}Service file is unchanged\n\n"
+break
+;;
+* ) echo "Answer \"y\" or \"n\""
+;;
+esac
+done
+
 fi
 
+else
+printf "${tInfo}\ninfo: ${tClear}installing service file\n\n"
+yes | cp -r "${serviceFileDist}" ${serviceFile}
+printf "${tInfo}\ninfo: ${tClear}service file is installed\n\n"
 
-#------------------------------------------------------------------------------------------------------------#
+systemctl daemon-reload
+fi
 
 # Check time sync
 
-echo "
-============================================================================
-Checking time sync | time sync is very important for everscale node!!!
-============================================================================
-"
-
+printf "\n${tHead}*${tClear} ${tHead2}Checking time sync | very important for everscale node!!!${tClear}\n
+--------------------------------------------------------------------------------\n\n"
 sleep 1
 
-echo "- installing Chrony as a client"
+printf "${tInfo}\ninfo: ${tClear}installing Chrony as a client\n\n"
 
-cat >$CHRONY_FILE_DIST <<EOL
+cat >$chronyConfigDist <<EOL
 pool pool.ntp.org iburst
 driftfile /var/lib/chrony/drift
 makestep 10 3
@@ -897,52 +637,52 @@ rtcsync
 EOL
 
 case $OPSYS in
-	centos)
-	yes | cp -rf ${CHRONY_FILE_DIST} /etc/chrony.conf
-	systemctl enable chronyd
-	service chronyd restart
-    ;;
+centos)
+yes | cp -rf ${chronyConfigDist} /etc/chrony.conf
+systemctl enable chronyd
+service chronyd restart
+;;
 
-    ubuntu)
-    yes | cp -rf ${CHRONY_FILE_DIST} /etc/chrony/chrony.conf
-	timedatectl set-ntp no
-	systemctl enable chrony
-	service chrony restart
-    ;;
+ubuntu)
+yes | cp -rf ${chronyConfigDist} /etc/chrony/chrony.conf
+timedatectl set-ntp no
+systemctl enable chrony
+service chrony restart
+;;
 
 esac
 
-#------------------------------------------------------------------------------------------------------------#
-
 # Rust install
-
-echo "
-============================================================================
-Installing Rust 
-============================================================================
-"
+printf "\n${tHead}*${tClear} ${tHead2}Installing Rust${tClear}\n
+--------------------------------------------------------------------------------\n\n"
 sleep 1
 
-curl https://sh.rustup.rs -sSf | RUSTUP_HOME=${EVER_RUSTUP} CARGO_HOME=${EVER_CARGO} sh -s -- --default-toolchain ${RUST_VERSION} -y
-source ${EVER_CARGO}/env
-rustup install ${RUST_VERSION}
-rustup default ${RUST_VERSION}
+curl https://sh.rustup.rs -sSf | RUSTUP_HOME=${rustup} CARGO_HOME=${cargo} sh -s -- --default-toolchain ${rustVersion} -y
+source ${cargo}/env
+rustup install ${rustVersion}
+rustup default ${rustVersion}
 
-#------------------------------------------------------------------------------------------------------------#
+}
 
-### Build node
+buildPackages () {
 
-echo "
-============================================================================
-Building Everscale node
-============================================================================
-"
+printf "\n${tHead}* Building and rebuilding packages $1${tClear}\n
+--------------------------------------------------------------------------------\n\n"
+
+case $1 in
+
+master)
+
+source ${cargo}/env
+
+# NODE
+
+printf "${tHead}* Building Everscale node $1${tClear}\n
+--------------------------------------------------------------------------------\n\n"
 sleep 1
 
-cd ${EVER_BUILD_SRC}
+cd ${buildSrcDir}/${master_nodeGhDirName}
 
-git clone ${EVER_OS_NODE_GH}
-cd ton-labs-node
 git submodule init
 git submodule update
 
@@ -959,7 +699,7 @@ export GC_OVERLAY=`jq -r '."overlay"' < deps_map.json`
 export GC_RLDP=`jq -r '."rldp"' < deps_map.json`
 export GC_TON_BLOCK=`jq -r '."ton-block"' < deps_map.json`
 export GC_TON_BLOCK_JSON=`jq -r '."ton-block-json"' < deps_map.json`
-export GC_TON_SDK
+export GC_TON_SDK=`jq -r '."ton-sdk"' < deps_map.json`
 export GC_TON_EXECUTOR=`jq -r '."ton-executor"' < deps_map.json`
 export GC_TON_TL=`jq -r '."ton-tl"' < deps_map.json`
 export GC_TON_TYPES=`jq -r '."ton-types"' < deps_map.json`
@@ -967,151 +707,100 @@ export GC_TON_VM=`jq -r '."ton-vm"' < deps_map.json`
 export GC_TON_LABS_ABI=`jq -r '."ton-labs-abi"' < deps_map.json`
 
 if RUSTFLAGS="-C target-cpu=native" cargo build --release; then
-     echo "
-- node is successfully built
-     	"
+printf "${tInfo}info: ${tClear}node is successfully built\n\n"
 
-     yes | cp -rf target/release/ton_node ${EVER_BUILD_TEMP}
-     sleep 1
+yes | cp -rf target/release/ton_node ${buildTempDir}/${serviceBinary}
+sleep 1
 else
-     echo "
-- node build failed, exit status: $?
-     	"
-     exit 1
+printf "${tError}error: ${tClear}node build failed, exit status: $?\n\n"
+exit 1
 fi
 
-### Build node tools
 
-echo "
-============================================================================
-Building Everscale node-tools
-============================================================================
-"
+# NODE-TOOLS
+
+printf "${tHead}* Building Everscale node-tools $1${tClear}\n
+--------------------------------------------------------------------------------\n\n"
 sleep 1
 
-cd $EVER_BUILD_SRC
+cd ${buildSrcDir}/${master_toolsGhDirName}
 
-git clone ${EVER_OS_TOOLS_GH}
-cd ton-labs-node-tools
 git submodule init
 git submodule update
 
 if cargo build --release; then
-     echo "- node-tools are successfully built
-     	"
-     yes | cp -rf target/release/{adnl_ping,adnl_resolve,console,dhtscan,gendht,keygen,keyid,print,zerostate} ${EVER_BUILD_TEMP}
-     sleep 1
+printf "${tInfo}info: ${tClear}node-tools are successfully built\n\n"
+yes | cp -rf target/release/{adnl_ping,adnl_resolve,console,dhtscan,gendht,keygen,keyid,print,zerostate} ${buildTempDir}
+sleep 1
 else
-     echo "- node-tools build failed, exit status: $?
-     	"
-     exit 1
+printf "${tError}error: ${tClear}node-tools build failed, exit status: $?\n\n"
+exit 1
 fi
 
-### Build TONOS-CLI
+# NODE-TOOLS
 
-echo "
-============================================================================
-Building Everscale TONOS-CLI
-============================================================================
-"
+printf "${tHead}* Building Everscale TONOS-CLI $1${tClear}\n
+--------------------------------------------------------------------------------\n\n"
 sleep 1
 
-cd $EVER_BUILD_SRC
+cd ${buildSrcDir}/${master_cliGhDirName}
 
-git clone ${TONOS_CLI_GH}
-cd tonos-cli
-cargo update
+git submodule init
+git submodule update
 
 if cargo build --release; then
-     echo "- TONOS-CLI is successfully built
-     	"
-     yes | cp -rf target/release/tonos-cli ${EVER_BUILD_TEMP}
-     sleep 1
+printf "${tInfo}info: ${tClear}TONOS-CLI is successfully built\n\n"
+yes | cp -rf target/release/tonos-cli ${buildTempDir}
+sleep 1
 else
-     echo "- TONOS-CLI build failed, exit status: $?
-     	"
-     exit 1
+printf "${tError}error: ${tClear}TONOS-CLI build failed, exit status: $?\n\n"
+exit 1
 fi
 
-#------------------------------------------------------------------------------------------------------------#
+;;
+esac
 
-### Clean install Everscale
-
-echo "
-============================================================================
-Doin clean init of Everscale node
-============================================================================
-"
-
-installNode () {
-	wget -O ${EVER_NODE_ROOT_ETC}/default_config.json https://raw.githubusercontent.com/tonlabs/ton-labs-node/master/configs/default_config.json
-	wget -O ${EVER_NODE_ROOT_ETC}/Elector.abi.json https://raw.githubusercontent.com/tonlabs/main.ton.dev/master/docker-compose/ton-node/configs/Elector.abi.json
-	wget -O ${EVER_NODE_ROOT_ETC}/console_template.json https://raw.githubusercontent.com/tonlabs/main.ton.dev/master/docker-compose/ton-node/configs/console_template.json
-	wget -O ${EVER_NODE_ROOT_ETC}/ton-global.config.json https://raw.githubusercontent.com/tonlabs/main.ton.dev/master/configs/ton-global.config.json
-	wget -O ${EVER_NODE_ROOT_ETC}/log_cfg.yml https://raw.githubusercontent.com/TolikUSS/everscale-setup/main/etc/log_cfg.yml
-
-
-	HOSTNAME=$(hostname -f)
-	TMP_DIR="${TMP}/INIT"
-	rm -rf "${TMP_DIR}"
-	mkdir -p "${TMP_DIR}"
-
-	"${EVER_BIN}/keygen" >"${EVER_NODE_ROOT_ETC}/${HOSTNAME}_console_client_keys.json"
-	cat "${EVER_NODE_ROOT_ETC}/${HOSTNAME}_console_client_keys.json"
-	jq -c .public "${EVER_NODE_ROOT_ETC}/${HOSTNAME}_console_client_keys.json" >"${EVER_NODE_ROOT_ETC}/console_client_public.json"
-
-	jq ".control_server_port = 3031" "${EVER_NODE_ROOT_ETC}/default_config.json" >"${TMP_DIR}/default_config.json.tmp"
-	cp "${TMP_DIR}/default_config.json.tmp" "${EVER_NODE_ROOT_ETC}/default_config.json"
-
-	# Generate initial config.json
-	cd "${EVER_NODE_ROOT}" && "${EVER_BIN}/ton_node" --configs "${EVER_NODE_ROOT_ETC}" --ckey "$(cat "${EVER_NODE_ROOT_ETC}/console_client_public.json")" &
-
-	sleep 10
-	pkill ton_node
-
-	if [ ! -f "${EVER_NODE_ROOT_ETC}/config.json" ]; then
-	    echo "ERROR: ${EVER_NODE_ROOT_ETC}/config.json does not exist"
-	    exit 1
-	fi
-
-	cat "${EVER_NODE_ROOT_ETC}/config.json"
-
-	if [ ! -f "${EVER_NODE_ROOT_ETC}/console_config.json" ]; then
-	    echo "ERROR: ${EVER_NODE_ROOT_ETC}/console_config.json does not exist"
-	    exit 1
-	fi
-
-	cat "${EVER_NODE_ROOT_ETC}/console_config.json"
-
-	jq ".client_key = $(jq .private "${EVER_NODE_ROOT_ETC}/${HOSTNAME}_console_client_keys.json")" "${EVER_NODE_ROOT_ETC}/console_config.json" >"${TMP_DIR}/console_config.json.tmp"
-	jq ".config = $(cat "${TMP_DIR}/console_config.json.tmp")" "${EVER_NODE_ROOT_ETC}/console_template.json" >"${EVER_NODE_ROOT_ETC}/console.json"
-	rm -f "${EVER_NODE_ROOT_ETC}/console_config.json"
-
-	JSON_MOD=$(cat ${EVER_NODE_ROOT_ETC}/config.json)
-
-		until [ "$(echo "${MY_ADDR}" | grep "\." -o | wc -l)" -eq 3 ] ; do
-		    MY_ADDR="$(curl -4 icanhazip.com)":${EVER_PORT}
-		done
-	echo "MY_ADDR = ${MY_ADDR}"
-
-	> ${EVER_NODE_ROOT_ETC}/config.json
-
-	jq --arg ip "$MY_ADDR" '.adnl_node.ip_address = $ip' <<<"$JSON_MOD" >> ${EVER_NODE_ROOT_ETC}/config.json
-
-	chown -R ${EVER_USER}:${EVER_USER} ${EVER_NODE_ROOT}
-
-	service everscale restart
-
-
-	rm -rf "${TMP_DIR}"
 }
 
+systemCheckup () {
 
+printf "\n${tHead}\n* Installer system checkup${tClear}\n
+================================================================================\n\n"
 
-if [[ -z $(pgrep ton_node) ]]; then
-	echo "- Copying compiled binaries to \"${EVER_BIN}\""
-	yes | cp -rf ${EVER_BUILD_TEMP}/* ${EVER_BIN}
-	echo "- Initiating the node"
-	installNode
- 
-fi
+rootCheck
+
+osCompliance
+
+loadEnvs
+
+prepareSystem
+
+}
+
+preparePackages () {
+
+printf "\n${tHead}\n* Preparing packages${tClear}\n
+================================================================================\n\n"
+
+doCompareGit $1
+
+buildPackages $1
+
+}
+
+installOrUpdate () {
+
+printf "\n${tHead}\n* Install or update packages${tClear}\n
+================================================================================\n\n"
+
+}
+
+#===============================================================================
+
+loadLogo
+
+#===============================================================================
+
+systemCheckup
+
+preparePackages master
