@@ -6,6 +6,7 @@
 
 # Coloring
 
+tLogo=$(tput bold)
 tHead=$(tput bold)
 tHead2=$(tput smul)
 tError=$(tput setaf 1)
@@ -75,7 +76,7 @@ nodeConfigDir="${nodePrefix}/etc"
 nodeBocDir="${nodePrefix}/boc"
 
 # Rust directory: rustup
-rustup="${installPrefix}/rustup"
+rustup="${installPrefix}/cargo"
 # Rust directory: cargo
 cargo="${installPrefix}/cargo"
 
@@ -114,6 +115,8 @@ nodePortMin=1024
 nodePortMax=65535
 if [[ -z "${nodePort}" ]] || [[ ! ${nodePort} =~ ${digitRegex} ]]; then
 setPort 30303 ${nodePortMin} ${nodePortMax}
+else
+validatePortIp
 fi
 
 # TMP for misc
@@ -121,7 +124,14 @@ tempDir="/var/tmp/everscale"
 serviceFileDist="${tempDir}/serviceFileDist"
 chronyConfigDist="${tempDir}/chrony"
 sysctlConfigDist="${tempDir}/sysctl"
+limitsConfigDist="${tempDir}/limits"
 
+
+# System config files
+sysctlConfig="/etc/sysctl.d/101-everscale.conf"
+limitsConfig="/etc/security/limits.d/everscale_limits.conf"
+
+# Pid of installer
 pidDir="/var/run/everscale"
 pidFile="${pidDir}/${serviceName}_installer.pid"
 
@@ -136,26 +146,26 @@ saveConfig
 
 setDir () {
 
-printf "${tHead}* Setting $1${tClear}\n
---------------------------------------------------------------------------------\n\n"
+printf "${tHead}* Setting ${1}${tClear}\n
+----------------------------------------\n\n"
 
 # usage: setDir $text $varValue
 
 while :; do
-read -p "Confirm to set default $1 is [${tLink}$2${tClear}]. Press ENTER to accept or enter your value (absolute path): " path
+read -p "Confirm to set default ${1} is [${tLink}${2}${tClear}]. Press ENTER to accept or enter your value (absolute path): " path
 
 if [ ! -z "${path}" ];then
 if [[ $path =~ ${folderRegex} ]]; then
 path=`echo "$path" | sed 's/\/$//'`
-printf "${tInfo}\ninfo: ${tClear}New default $1 is ${path}\n\n"
+printf "${tInfo}\ninfo: ${tClear}New default ${1} is ${path}\n\n"
 setDirVar=${path}
 break
 else
-printf "\n_error: ${tError}Path is not valid, please try again or press ENTER to accept default $1 value: [$2]\n\n"
+printf "\n_error: ${tError}Path is not valid, please try again or press ENTER to accept default ${1} value: [${2}]\n\n"
 fi
 else
-printf "${tInfo}\ninfo: ${tClear}Using default path $2\n\n"
-setDirVar=$2
+printf "${tInfo}\ninfo: ${tClear}Using default path ${2}\n\n"
+setDirVar=${2}
 break; fi
 done
 
@@ -164,12 +174,12 @@ done
 setUser () {
 
 printf "${tHead}* Setting service username${tClear}\n
---------------------------------------------------------------------------------\n\n"
+----------------------------------------\n\n"
 
 # usage: setUser $username
 
 while :; do
-read -p "Confirm to set node process user to [${tLink}$1${tClear}]. Press ENTER to accept or enter your value: " username
+read -p "Confirm to set node process user to [${tLink}${1}${tClear}]. Press ENTER to accept or enter your value: " username
 
 if [ ! -z "$username" ]
 then
@@ -178,11 +188,11 @@ printf "${tInfo}\ninfo: ${tClear}New node process user is ${username}\n\n"
 serviceUser=${username}
 break
 else
-printf "\n_error: ${tError}Username is not valid, please try again or press ENTER to accept [$1]\n\n"
+printf "\n_error: ${tError}Username is not valid, please try again or press ENTER to accept [${1}]\n\n"
 fi
 else
-printf "${tInfo}\ninfo: ${tClear}Using default username $1\n\n"
-serviceUser=$1
+printf "${tInfo}\ninfo: ${tClear}Using default username ${1}\n\n"
+serviceUser=${1}
 break
 fi
 done
@@ -192,32 +202,111 @@ done
 setPort () {
 
 printf "${tHead}* Setting service port${tClear}\n
---------------------------------------------------------------------------------\n\n"
+----------------------------------------\n\n"
 
 while :; do
-read -p "Confirm to set everscale's default UDP port [${tLink}$1${tClear}]. Press ENTER to accept or enter your value (${2} - ${3}): " port
-[[ $port =~ $digitRegex ]] || { printf "${tInfo}\ninfo: ${tClear}Using default port $1\n\n"; nodePort=$1; break; }
+read -p "Confirm to set everscale's default UDP port [${tLink}${1}${tClear}]. Press ENTER to accept or enter your value (${2} - ${3}): " port
+[[ $port =~ $digitRegex ]] || { printf "${tInfo}\ninfo: ${tClear}Using default port ${1}\n\n"; nodePort=${1}; break; }
 if ((port >= ${2} && port <= ${3})); then
 printf "${tInfo}\ninfo: ${tClear}New server port number is ${port}\n\n"
 nodePort=${port}
+validatePortIp
 break
 else
-printf "\n_error: ${tError}Port is out of allowed range, please try again or press ENTER to accept port [$1]\n\n"
+printf "\n_error: ${tError}Port is out of allowed range, please try again or press ENTER to accept port [${1}]\n\n"
 fi
 done
 
-} 
+}
 
+validatePortIp () {
 
+printf "${tHead}* Validating port:ip${tClear}\n
+----------------------------------------\n\n"
+
+until [ "$(echo "${eNodeAddr}" | grep "\." -o | wc -l)" -eq 3 ] ; do
+eNodeAddr="$(curl -s -4 icanhazip.com)"
+done
+iNodeAddr="$(hostname -I)"
+NodeAddr=${eNodeAddr}:${nodePort}
+printf "Node address: ${tLink}${NodeAddr}${tClear}\n\n"
+
+#Compare internal and external ip addresses
+if [[ ! -z ${iNodeAddr} ]]; then
+
+if [[ ${iNodeAddr} = ${eNodeAddr} ]]; then
+printf "${tInfo}info: ${tClear}Server has public ip address${tClear}\n\n"
+else
+printf "${tWarn}warn: ${tClear}Server is behind NAT (no real IP address)\n
+Script is detected the following addresses
+
+        local ip: ${tLink}${iNodeAddr}${tClear}
+     external ip: ${tLink}${eNodeAddr}${tClear}
+
+You need to check if port ${tLink}${nodePort}${tClear}
+${tClear}\n"
+fi
+fi
+
+}
 
 createFolder () {
 
-if [ ! -d "$1" ]; then mkdir -p $1
+if [ ! -d "${1}" ]; then mkdir -p ${1}
 # if chmod is passed 
-if [ ! -z ${3+x} ]; then chmod -R $3 $1; chmod=" with permissions $3" ; fi
+if [ ! -z ${3+x} ]; then chmod -R ${3} ${1}; chmod=" with permissions ${3}" ; fi
 # chown if we need it
-if [ "$2" -eq 1 ]; then chown -R ${serviceUser}:${serviceUser} $1; owner=" with owner ${serviceUser}:${serviceUser}"; fi
-printf "${tInfo}info: ${tClear}Created folder ${tLink}$1${tClear}${chmod}${owner}\n\n" 
+if [ "${2}" -eq 1 ]; then chown -R ${serviceUser}:${serviceUser} ${1}; owner=" with owner ${serviceUser}:${serviceUser}"; fi
+printf "${tInfo}info: ${tClear}Created folder ${tLink}${1}${tClear}${chmod}${owner}\n\n" 
+fi
+
+}
+
+compareFiles () {
+
+if [ ! -z ${1+x} ] && [ ! -z ${2+x} ] && [ ! -z ${3+x} ]; then
+
+# Usage compareFiles $name $source $target $comand
+
+if [[ -f ${3} ]]; then
+# Compute checksum of installed service file
+file_MD5=`md5sum ${3} | awk '{print ${1}}'`
+fileDist_MD5=`md5sum ${2} | awk '{print ${1}}'`
+if [ "${file_MD5}" != "${fileDist_MD5}" ]; then
+printf "\n_warn: ${tWarn}You need to update ${1}: \"${tLink}${3}${tClear}\"\n\n"
+while true; do
+read -p "Answer "y" if you want to replace it.
+Answer y/n:" yn
+case $yn in
+[Yy]* )
+printf "${tInfo}\ninfo: ${tClear}replacing...\n\n"
+yes | cp -r ${2} ${3}
+printf "\n_warn: ${tWarn}File is replaced\n\n"
+comm="$(${4})"
+sleep 2
+break
+;;
+[Nn]* )
+
+break
+;;
+* ) echo "Answer \"y\" or \"n\""
+;;
+esac
+done
+else
+printf "${tInfo}\ninfo: ${tClear}${1} File is unchanged\n\n"
+
+fi
+
+else
+printf "${tInfo}\ninfo: ${tClear}Installing file\n\n"
+yes | cp -r ${2} ${3}
+printf "${tInfo}\ninfo: ${tClear}File is installed: \"${tLink}${3}${tClear}\"\n\n"
+comm="$(${4})"
+sleep 2
+fi
+
 fi
 
 }
@@ -242,27 +331,28 @@ EOL
 
 compareGit () {
 
-# Usage compareGit $1repoCommonName $2remote $3locaPath $4branch
+# Usage compareGit ${1}repoCommonName ${2}remote ${3}locaPath ${4}branch
 
-printf "${tInfo}\ninfo: ${tClear}Comparing $1 repo${tClear}\n"
+printf "${tInfo}\ninfo: ${tClear}Comparing ${1} repo${tClear}\n
+----------------------------------------\n\n"
 
-Commit=`git ls-remote $2 $4 | awk '{print $1}'`
+Commit=`git ls-remote ${2} ${4} | awk '{print ${1}}'`
 
-if [ -d ${buildSrcDir}/$3 ]; then 
-cd ${buildSrcDir}/$3 
-CommitL=`git log -1 | grep commit | awk '{print $2}'`
-printf "local / remote commit:\n    local commit: ${tLink}${CommitL}${tClear}\n   remote commit: ${tLink}${Commit}${tClear}\n"
+if [ -d ${buildSrcDir}/${3} ]; then 
+cd ${buildSrcDir}/${3} 
+CommitL=`git log -1 | grep commit | awk '{print ${2}}'`
+printf "local / remote commit:\n\n    local commit: ${tLink}${CommitL}${tClear}\n   remote commit: ${tLink}${Commit}${tClear}\n\n"
 else
-printf "${tWarn}warn: ${tClear}Local $1 is missing. Doing clone${tClear}\n"
-git clone $2 ${buildSrcDir}/$3 
+printf "${tWarn}warn: ${tClear}Local ${1} is missing. Doing clone${tClear}\n"
+git clone ${2} ${buildSrcDir}/${3} 
 CommitL=${Commit}
 Init=1
 fi
 
 if [[ ! ${Commit} == ${CommitL} ]]; then
 printf "${tWarn}warn: ${tClear}Local - Remote repos mismatch. Making clone:\n"
-yes | rm -rf ${buildSrcDir}/$3
-git clone $2 ${buildSrcDir}/$3 
+yes | rm -rf ${buildSrcDir}/${3}
+git clone ${2} ${buildSrcDir}/${3} 
 else
 if [[ ! $Init -eq 1 ]]; then printf "${tInfo}info: ${tClear}Local - Remote repos match. No action needed${tClear}\n";fi
 fi
@@ -271,10 +361,10 @@ fi
 
 doCompareGit () {
 
-printf "${tHead}* Comparing and redownloading repos from $1${tClear}\n
---------------------------------------------------------------------------------\n\n"
+printf "${tHead}* Comparing and redownloading repos from ${1}${tClear}\n
+----------------------------------------\n\n"
 
-case $1 in
+case ${1} in
 
 master)
 
@@ -298,9 +388,9 @@ loadLogo () {
 
 # Logo
 
-    printf "\n${tHead}      *@@@@@@@@@@@@@@          Everscale Ever OS validator node installer
+    printf "\n\n\n${tHead}      *@@@@@@@@@@@@@@          Everscale Ever OS validator node installer
     *@@@@@@@@@@@@@@@@
-  *@@@@@@@@@@@@@@@@@@          v 0.2
+  *@@@@@@@@@@@@@@@@@@          v 0.24
 *@@@@@@@@@@@@@@@@@@@@
              @@@@@@@@          2022-02-15
              @@@@@@@@
@@ -348,7 +438,7 @@ sleep 1
 rootCheck () {
 
 printf "${tHead}\n* Checking if thes script is running under root user (sudo)${tClear}\n
---------------------------------------------------------------------------------\n\n"
+----------------------------------------\n\n"
 
 if [ "$EUID" -ne 0 ]; then printf "${tError}error: ${tClear}please run installer script as root!\n\n"; sleep 1; exit 1; else printf "${tInfo}info: ${tClear}ok\n\n"; sleep 1; fi
 
@@ -357,7 +447,7 @@ if [ "$EUID" -ne 0 ]; then printf "${tError}error: ${tClear}please run installer
 osCompliance () {
 
 printf "${tHead}\n* Getting OS info${tClear}\n
---------------------------------------------------------------------------------\n\n"
+----------------------------------------\n\n"
 
 OPSYS=`uname -s`
 if [[ "${OPSYS}" == "Linux" ]]; then source /etc/os-release; OPSYS="${ID}"; OPVER="${VERSION_ID}"; else printf "${tError}error: ${tClear}Operating system ${OPSYS} is unsupported\n\n"; exit 1; fi
@@ -412,10 +502,19 @@ esac
 
 }
 
+rustInstall () {
+
+curl https://sh.rustup.rs -sSf | sh -s -- --default-toolchain ${rustVersion} -q -y --no-modify-path
+source ${cargo}/env
+rustup install ${rustVersion}
+rustup default ${rustVersion}
+
+}
+
 prepareSystem () {
 
 printf "${tHead}\n* Preparing system${tClear}\n
---------------------------------------------------------------------------------\n\n"
+----------------------------------------\n\n"
 
 printf "\n${tHead}*${tClear} ${tHead2}Creating folders if needed${tClear}\n\n"
 sleep 1
@@ -444,13 +543,13 @@ echo "SELINUX=disabled" > /etc/selinux/config
 sleep 1
 fi
 
-# Sysctl and limits
+# Sysctl
 
 printf "\n${tHead}*${tClear} ${tHead2}Doing basic tuning of sysctl${tClear}\n
---------------------------------------------------------------------------------\n\n"
+----------------------------------------\n\n"
 sleep 1
 
-cat > /etc/sysctl.d/101-everscale.conf <<EOL
+cat > ${sysctlConfigDist} <<EOL
 # Max files
 fs.file-max=6521604
 
@@ -478,17 +577,26 @@ net.ipv4.udp_rmem_min=131072
 net.ipv4.udp_wmem_min=131072
 EOL
 
-sysctl -p /etc/sysctl.d/101-everscale.conf
+compareFiles "Sysctl file" \
+${serviceFileDist} \
+${serviceFile} \
+"systemctl daemon-reload"
 
-cat > /etc/security/limits.d/everscale_limits.conf <<EOL
+# Limits
+
+cat > ${limitsConfigDist} <<EOL
 root - memlock unlimited
 $serviceUser - memlock unlimited
 EOL
 
+compareFiles "Limits file" \
+${limitsConfigDist} \
+${limitsConfig}
+
 # Check if path exists
 
 printf "\n${tHead}*${tClear} ${tHead2}Checking and adding Everscale bin to PATH${tClear}\n
---------------------------------------------------------------------------------\n\n"
+----------------------------------------\n\n"
 sleep 1
 
 checkPath=`if [[ -f /etc/profile.d/everscale.sh ]]; then more /etc/profile.d/everscale.sh | grep -c ${binDir}; else echo 0; fi` 
@@ -504,7 +612,7 @@ export PATH="${binDir}:${PATH}"
 # Check firewall status
 
 printf "\n${tHead}*${tClear} ${tHead2}Checking default firewall service and adding port allow rule if missing${tClear}\n
---------------------------------------------------------------------------------\n\n"
+----------------------------------------\n\n"
 sleep 1
 
 case $OPSYS in
@@ -514,7 +622,7 @@ if [[ $(firewall-cmd --state) == "running" ]]
 then
 printf "${tWarn}warn: ${tClear}Firewalld is running. We will check it's rules. You can disable it if you know what are you doing for better perfomance.\n\n"
 
-if [[ $(firewall-cmd --list-ports | grep "${nodePort}" | grep "udp" | awk -F/ '{ print $1}') -eq ${nodePort} ]]; then 
+if [[ $(firewall-cmd --list-ports | grep "${nodePort}" | grep "udp" | awk -F/ '{ print ${1}}') -eq ${nodePort} ]]; then 
 printf "${tInfo}info: ${tClear}Port ${nodePort}/udp is open\n\n"
 else
 printf "${tWarn}warn: ${tClear}Adding default rule to firewalld: \"firewall-cmd --zone=public --permanent --add-port=${nodePort}/udp\"\n\n"
@@ -522,7 +630,6 @@ firewall-cmd --zone=public --permanent --add-port=${nodePort}/udp
 printf "${tInfo}info: ${tClear}Reloading rule\n\n"
 firewall-cmd --reload
 fi
-
 
 else
 printf "${tInfo}info: ${tClear}Firewalld is not running\n\n"
@@ -536,7 +643,7 @@ if [[ $(ufw status) == "active" ]]
 then
 printf "_warn: ${tInfo}UFW is running. We will check it's rules. You can disable it if you know what are you doing for better perfomance.\n\n"
 
-if [[ $(ufw status | grep "${nodePort}" | grep "udp"  | grep -v "v6" | awk -F/ '{ print $1}') -eq ${nodePort} ]]; then 
+if [[ $(ufw status | grep "${nodePort}" | grep "udp"  | grep -v "v6" | awk -F/ '{ print ${1}}') -eq ${nodePort} ]]; then 
 \n\n"Port ${nodePort}/udp is open\n\n"
 else
 printf "${tWarn}warn: ${tClear}Adding default rule to ufw: \"ufw allow ${nodePort}/udp\"\n\n"
@@ -552,7 +659,7 @@ esac
 # Check service file
 
 printf "\n${tHead}*${tClear} ${tHead2}Checking if service file is present${tClear}\n
---------------------------------------------------------------------------------\n\n"
+----------------------------------------\n\n"
 sleep 1
 
 
@@ -582,49 +689,15 @@ WantedBy=multi-user.target
 Alias=${serviceName}.service
 EOL
 
-if [[ -f ${serviceFile} ]]; then
-printf "${tInfo}\ninfo: ${tClear}service file \"${serviceFile}\" is found\n\n"
-# Compute checksum of installed service file
-serviceFile_MD5=`md5sum ${serviceFile} | awk '{print $1}'`
-serviceFileDist_MD5=`md5sum ${serviceFileDist} | awk '{print $1}'`
-if [ "${serviceFile_MD5}" != "${serviceFileDist_MD5}" ]; then
-printf "\n_warn: ${tWarn}You need to update your service file\n\n"
-while true; do
-read -p "Answer "y" if you want to replace it.
-Answer y/n:" yn
-case $yn in
-[Yy]* )
-echo "- replacing service file
-"
-yes | cp -r "${serviceFileDist}" ${serviceFile}
-printf "\n_warn: ${tWarn}Service file is replaced\n\n"
-systemctl daemon-reload
-sleep 2
-break
-;;
-[Nn]* )
-printf "${tInfo}\ninfo: ${tClear}Service file is unchanged\n\n"
-break
-;;
-* ) echo "Answer \"y\" or \"n\""
-;;
-esac
-done
-
-fi
-
-else
-printf "${tInfo}\ninfo: ${tClear}installing service file\n\n"
-yes | cp -r "${serviceFileDist}" ${serviceFile}
-printf "${tInfo}\ninfo: ${tClear}service file is installed\n\n"
-
-systemctl daemon-reload
-fi
+compareFiles "${serviceName} service file" \
+${serviceFileDist} \
+${serviceFile} \
+"systemctl daemon-reload"
 
 # Check time sync
 
 printf "\n${tHead}*${tClear} ${tHead2}Checking time sync | very important for everscale node!!!${tClear}\n
---------------------------------------------------------------------------------\n\n"
+----------------------------------------\n\n"
 sleep 1
 
 printf "${tInfo}\ninfo: ${tClear}installing Chrony as a client\n\n"
@@ -638,38 +711,42 @@ EOL
 
 case $OPSYS in
 centos)
-yes | cp -rf ${chronyConfigDist} /etc/chrony.conf
-systemctl enable chronyd
-service chronyd restart
+compareFiles "Chrony config file" \
+${chronyConfigDist} \
+"/etc/chrony.conf" \
+"systemctl enable chronyd && service chronyd restart"
 ;;
 
 ubuntu)
-yes | cp -rf ${chronyConfigDist} /etc/chrony/chrony.conf
-timedatectl set-ntp no
-systemctl enable chrony
-service chrony restart
+compareFiles "Chrony config file" \
+${chronyConfigDist} \
+"/etc/chrony/chrony.conf" \
+"systemctl enable chronyd && service chronyd restart"
 ;;
 
 esac
 
 # Rust install
 printf "\n${tHead}*${tClear} ${tHead2}Installing Rust${tClear}\n
---------------------------------------------------------------------------------\n\n"
+----------------------------------------\n\n"
 sleep 1
 
-curl https://sh.rustup.rs -sSf | RUSTUP_HOME=${rustup} CARGO_HOME=${cargo} sh -s -- --default-toolchain ${rustVersion} -y
-source ${cargo}/env
-rustup install ${rustVersion}
-rustup default ${rustVersion}
+RUSTUP_HOME=${rustup}
+CARGO_HOME=${cargo}
+RUSTUP_INIT_SKIP_PATH_CHECK=yes
+export RUSTUP_HOME
+export CARGO_HOME
+
+rustInstall
 
 }
 
 buildPackages () {
 
-printf "\n${tHead}* Building and rebuilding packages $1${tClear}\n
---------------------------------------------------------------------------------\n\n"
+printf "\n\n\n${tHead}* Building and rebuilding packages from: ${tLink}${1}${tClear}\n
+================================================================================\n\n"
 
-case $1 in
+case ${1} in
 
 master)
 
@@ -677,8 +754,8 @@ source ${cargo}/env
 
 # NODE
 
-printf "${tHead}* Building Everscale node $1${tClear}\n
---------------------------------------------------------------------------------\n\n"
+printf "${tHead}* Building Everscale node{tClear}\n
+----------------------------------------\n\n"
 sleep 1
 
 cd ${buildSrcDir}/${master_nodeGhDirName}
@@ -690,8 +767,8 @@ sed -i.bak 's%features = \[\"cmake_build\", \"dynamic_linking\"\]%features = \[\
 
 # Insert commits in node version
 
-export CARGO_PKG_VERSION=`cargo -V | awk '{print $2}'`
-export RUST_VERSION=`rustc -V | awk '{print $2}'`
+export CARGO_PKG_VERSION=`cargo -V | awk '{print ${2}}'`
+export RUST_VERSION=`rustc -V | awk '{print ${2}}'`
 export GC_TON_NODE=`git rev-parse HEAD`
 export GC_ADNL=`jq -r '."adnl"' < deps_map.json`
 export GC_DHT=`jq -r '."dht"' < deps_map.json`
@@ -707,20 +784,20 @@ export GC_TON_VM=`jq -r '."ton-vm"' < deps_map.json`
 export GC_TON_LABS_ABI=`jq -r '."ton-labs-abi"' < deps_map.json`
 
 if RUSTFLAGS="-C target-cpu=native" cargo build --release; then
-printf "${tInfo}info: ${tClear}node is successfully built\n\n"
+printf "${tInfo}\ninfo: ${tClear}node is successfully built\n\n"
 
 yes | cp -rf target/release/ton_node ${buildTempDir}/${serviceBinary}
 sleep 1
 else
-printf "${tError}error: ${tClear}node build failed, exit status: $?\n\n"
+printf "${tError}\nerror: ${tClear}node build failed, exit status: $?\n\n"
 exit 1
 fi
 
 
 # NODE-TOOLS
 
-printf "${tHead}* Building Everscale node-tools $1${tClear}\n
---------------------------------------------------------------------------------\n\n"
+printf "${tHead}* Building Everscale node-tools{tClear}\n
+----------------------------------------\n\n"
 sleep 1
 
 cd ${buildSrcDir}/${master_toolsGhDirName}
@@ -729,18 +806,18 @@ git submodule init
 git submodule update
 
 if cargo build --release; then
-printf "${tInfo}info: ${tClear}node-tools are successfully built\n\n"
+printf "${tInfo}\ninfo: ${tClear}node-tools are successfully built\n\n"
 yes | cp -rf target/release/{adnl_ping,adnl_resolve,console,dhtscan,gendht,keygen,keyid,print,zerostate} ${buildTempDir}
 sleep 1
 else
-printf "${tError}error: ${tClear}node-tools build failed, exit status: $?\n\n"
+printf "${tError}\nerror: ${tClear}node-tools build failed, exit status: $?\n\n"
 exit 1
 fi
 
 # NODE-TOOLS
 
-printf "${tHead}* Building Everscale TONOS-CLI $1${tClear}\n
---------------------------------------------------------------------------------\n\n"
+printf "${tHead}* Building Everscale TONOS-CLI{tClear}\n
+----------------------------------------\n\n"
 sleep 1
 
 cd ${buildSrcDir}/${master_cliGhDirName}
@@ -749,11 +826,11 @@ git submodule init
 git submodule update
 
 if cargo build --release; then
-printf "${tInfo}info: ${tClear}TONOS-CLI is successfully built\n\n"
+printf "${tInfo}\ninfo: ${tClear}TONOS-CLI is successfully built\n\n"
 yes | cp -rf target/release/tonos-cli ${buildTempDir}
 sleep 1
 else
-printf "${tError}error: ${tClear}TONOS-CLI build failed, exit status: $?\n\n"
+printf "${tError}\nerror: ${tClear}TONOS-CLI build failed, exit status: $?\n\n"
 exit 1
 fi
 
@@ -764,7 +841,7 @@ esac
 
 systemCheckup () {
 
-printf "\n${tHead}\n* Installer system checkup${tClear}\n
+printf "\n\n\n${tHead}* Installer system checkup${tClear}\n
 ================================================================================\n\n"
 
 rootCheck
@@ -779,18 +856,18 @@ prepareSystem
 
 preparePackages () {
 
-printf "\n${tHead}\n* Preparing packages${tClear}\n
+printf "\n\n\n${tHead}* Preparing packages${tClear}\n
 ================================================================================\n\n"
 
-doCompareGit $1
+doCompareGit ${1}
 
-buildPackages $1
+buildPackages ${1}
 
 }
 
 installOrUpdate () {
 
-printf "\n${tHead}\n* Install or update packages${tClear}\n
+printf "\n\n\n${tHead}* Install or update packages${tClear}\n
 ================================================================================\n\n"
 
 }
