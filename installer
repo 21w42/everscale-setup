@@ -10,7 +10,7 @@ ubuntuPackages="net-tools chrony cmake automake pkg-config git libssl-dev clang 
 # Centos
 centosPackages="net-tools chrony openssl-devel clang libzstd-devel gperftools gperftools-devel nload curl wget jq mc"
 # Rust
-rustVersion="1.58.0"
+rustVersion="1.57.0"
 
 # Coloring
 
@@ -324,6 +324,8 @@ logDir=${logDir}
 backupDir=${backupDir}
 serviceUser=${serviceUser}
 nodePort=${nodePort}
+# Manual config:
+ignoreSELinux=${ignoreSELinux}
 EOL
 
 }
@@ -344,7 +346,7 @@ cd ${buildSrcDir}/${3}
 CommitL=`git log -1 | grep commit | awk '{print $2 }'`
 printf "local / remote commit:\n\n    local commit: ${tLink}${CommitL}${tClear}\n   remote commit: ${tLink}${Commit}${tClear}\n\n"
 else
-printf "${tWarn}warn: ${tClear}Local ${1} is missing. Doing clone${tClear}\n"
+printf "${tWarn}warn: ${tClear}Local ${1} is missing. Doing clone:${tClear}\n"
 git clone ${2} ${buildSrcDir}/${3} 
 CommitL=${Commit}
 Init=1
@@ -469,9 +471,9 @@ printf "${tInfo}info: ${tClear}Centos OS detected\n\n"
 export ZSTD_LIB_DIR=/usr/lib64
 
 case $OPVER in
-8 | 7)
+8)
 printf "${tInfo}info: ${tClear}Version $OPVER is supported\n\n"
-yum -y update --allowerasing
+yum -y update
 yum -y group install -y "Development Tools"
 yum -y install epel-release
 yum -y install ${centosPackages}
@@ -811,7 +813,7 @@ source ${cargo}/env
 
 # NODE
 
-printf "${tHead}* Building Everscale node{tClear}\n
+printf "${tHead}* Building Everscale node${tClear}\n
 ----------------------------------------\n\n"
 
 cd ${buildSrcDir}/${master_nodeGhDirName}
